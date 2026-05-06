@@ -1,32 +1,34 @@
 // js/slot-mapper.js — Maps fddb entries to meal slots
 
 // fddb Zeitfenster → App-Slots
-// Basierend auf Katjas tatsächlichen fddb-Tracking-Uhrzeiten:
-//   00:00       = Post-Workout Shake (spezielle Konvention, siehe timeToSlot)
-//   05:00–08:59 = Frühstück (06:30 Porridge)
-//   09:00–11:59 = Snack 1 (12:00 Skyr/Joghurt — Grenze angepasst, s.u.)
-//   12:00–13:29 = Snack 1 (12:00 ist Joghurt-Snack, kein Mittagessen)
-//   13:30–15:59 = Mittagessen (14:00 Every Bowl)
-//   16:00–16:59 = Pre-Workout (16:30 Reiswaffel/Banane/Pflaumenmus)
-//   17:00–18:59 = Snack 2 (17:00 Espresso + Schoko)
-//   19:00–20:29 = Abendessen (19:53 Brot + Gemüse)
-//   20:30–23:59 = Snack 3 (21:xx Ei + Aufschnitt)
+// fddb Standard-Uhrzeiten bei reiner Slot-Auswahl (ohne manuelle Uhrzeit):
+//   00:00       = fddb "Snack 3" Overflow → gehört zum VORTAG als snack3
+//   06:30       = Frühstück
+//   12:00       = Snack 1 (Skyr/Joghurt)
+//   14:00       = Mittagessen (Every Bowl)
+//   16:30       = Snack 2 (enthält Pre-Workout + Nachmittagssnack, Split per Produkterkennung)
+//   20:00       = Abendessen (Brot, Gemüse, Aufschnitt, Ei)
+//   22:00+      = Snack 3 / Post-Workout Shake
+//
+// Die Zeitfenster sind großzügig gewählt, damit auch leicht abweichende
+// Uhrzeiten (z.B. 16:44 Milchschnitte, 19:53 manuelles Abendessen) korrekt landen.
 const TIME_SLOT_MAP = [
-  // 00:00 wird separat in timeToSlot() behandelt
+  // 00:00 wird separat behandelt (→ Vortag snack3)
   { start: '00:01', end: '04:59', slot: 'snack3' },
-  { start: '05:00', end: '08:59', slot: 'breakfast' },
-  { start: '09:00', end: '13:29', slot: 'snack1' },
+  { start: '05:00', end: '09:59', slot: 'breakfast' },
+  { start: '10:00', end: '13:29', slot: 'snack1' },
   { start: '13:30', end: '15:59', slot: 'lunch' },
-  { start: '16:00', end: '16:59', slot: 'preworkout' },
-  { start: '17:00', end: '18:59', slot: 'snack2' },
-  { start: '19:00', end: '20:29', slot: 'dinner' },
-  { start: '20:30', end: '23:59', slot: 'snack3' },
+  { start: '16:00', end: '17:59', slot: 'snack2' },
+  { start: '18:00', end: '20:59', slot: 'dinner' },
+  { start: '21:00', end: '23:59', slot: 'snack3' },
 ];
 
 function timeToSlot(timeStr) {
-  // 00:00 ist Katjas Konvention: Post-Workout Shake wird bewusst auf 00:00 geloggt,
-  // damit er im fddb-Export dem richtigen Kalendertag zugeordnet ist.
-  if (timeStr === '00:00') return 'postworkout';
+  // 00:00 = fddb "Snack 3" Overflow: fddb's Snack-3-Slot geht bis 00:00,
+  // aber der CSV-Export schreibt 00:00 auf den NÄCHSTEN Kalendertag.
+  // Diese Items gehören zum Vortag → werden in parseFddbCsv umgehängt.
+  // Hier als snack3 taggen (das Datum wird vorher korrigiert).
+  if (timeStr === '00:00') return 'snack3';
 
   for (const { start, end, slot } of TIME_SLOT_MAP) {
     if (timeStr >= start && timeStr <= end) return slot;
@@ -63,8 +65,19 @@ export function parseFddbCsv(csvText) {
     if (!dtMatch) continue;
 
     const [, dd, mm, yyyy, hh, mi] = dtMatch;
-    const date = `${yyyy}-${mm}-${dd}`;
+    let date = `${yyyy}-${mm}-${dd}`;
     const time = `${hh}:${mi}`;
+
+    // 00:00 Einträge gehören zum Vortag: fddb's Snack-3-Slot (20:00–00:00)
+    // exportiert Mitternacht-Items als 00:00 am Folgetag.
+    if (time === '00:00') {
+      const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+      d.setDate(d.getDate() - 1);
+      const py = d.getFullYear();
+      const pm = String(d.getMonth() + 1).padStart(2, '0');
+      const pd = String(d.getDate()).padStart(2, '0');
+      date = `${py}-${pm}-${pd}`;
+    }
 
     // kJ → kcal
     const kcal = Math.round((kj / 4.184) * 10) / 10;
@@ -120,24 +133,26 @@ export function assignSlots(entries, dayConfigs, slotRules) {
     const dayConfig = dayConfigs[entry.date];
     const isWorkout = dayConfig?.day_type === 'workout';
 
-    // Step 1: Assign by time window (+ 00:00 → postworkout)
+    // Step 1: Assign by time window
     let slot = timeToSlot(entry.time);
 
-    // Step 2: On workout days, refine the 16:00-16:59 block using product rules.
-    // This block can be either preworkout (Reiswaffel, Banane) or postworkout (Whey, Casein).
-    // Default from timeToSlot is 'preworkout'; if a rule matches with target_slot 'postworkout',
-    // override to postworkout. Time-block logic (applyTimeBlockLogic) will then pull companions.
-    if (isWorkout && slot === 'preworkout' && slotRules.length > 0) {
+    // Step 2: On workout days, split the snack2 block (16:00-17:59) using product rules.
+    // fddb puts Pre-Workout (Reiswaffel, Banane) and Nachmittagssnack (Espresso, Schoko)
+    // all on the same time (16:30). Product rules identify pre/post-workout items.
+    if (isWorkout && slot === 'snack2' && slotRules.length > 0) {
       const matchedRule = findMatchingRule(entry.food_name, slotRules);
       if (matchedRule) {
         slot = matchedRule.target_slot;
       }
     }
 
-    // Step 3: On non-workout days, remap workout-specific slots
-    if (!isWorkout) {
-      if (slot === 'preworkout') slot = 'snack2';    // 16:00-16:59 → Snack 2 an Ruhetagen
-      if (slot === 'postworkout') slot = 'snack3';    // 00:00 Shake → Snack 3 an Ruhetagen
+    // Step 3: On workout days, split the snack3 block (21:00+) using product rules.
+    // Post-Workout Shake (Whey, Casein) tracked as Snack 3 → should become postworkout.
+    if (isWorkout && slot === 'snack3' && slotRules.length > 0) {
+      const matchedRule = findMatchingRule(entry.food_name, slotRules);
+      if (matchedRule) {
+        slot = matchedRule.target_slot;
+      }
     }
 
     return { ...entry, slot, slot_auto: true };
@@ -145,6 +160,10 @@ export function assignSlots(entries, dayConfigs, slotRules) {
 }
 
 // Apply time-block logic: if a lead product is found, pull companions
+// Only applies to postworkout: all items at the same timestamp as a Whey/Casein
+// should become postworkout (e.g. Hafermilch + Honig in the Shake).
+// Does NOT apply to preworkout: the 16:30 block mixes Pre-Workout and Snack 2 items,
+// and they should stay in their individually assigned slots.
 export function applyTimeBlockLogic(entries) {
   // Group entries by date + time
   const groups = {};
@@ -154,31 +173,23 @@ export function applyTimeBlockLogic(entries) {
     groups[key].push(idx);
   });
 
-  // For each time block: if any entry was assigned preworkout/postworkout,
-  // assign all entries in the same time block to the same slot
   const result = [...entries];
   for (const indices of Object.values(groups)) {
     if (indices.length <= 1) continue;
 
-    // Find if any entry in this block has a workout slot
-    let workoutSlot = null;
-    let highestPriority = -1;
-
+    // Only look for postworkout leads (not preworkout)
+    let hasPostworkout = false;
     for (const idx of indices) {
-      const e = result[idx];
-      if (e.slot === 'preworkout' || e.slot === 'postworkout') {
-        // Use the slot with highest priority if multiple
-        if (!workoutSlot || (e._rulePriority || 0) > highestPriority) {
-          workoutSlot = e.slot;
-          highestPriority = e._rulePriority || 0;
-        }
+      if (result[idx].slot === 'postworkout') {
+        hasPostworkout = true;
+        break;
       }
     }
 
-    // If found, assign all entries in this block to that slot
-    if (workoutSlot) {
+    // If any entry in this block is postworkout, assign all to postworkout
+    if (hasPostworkout) {
       for (const idx of indices) {
-        result[idx] = { ...result[idx], slot: workoutSlot };
+        result[idx] = { ...result[idx], slot: 'postworkout' };
       }
     }
   }
