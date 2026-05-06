@@ -718,12 +718,14 @@
 
     /* Import Section */
     .import-section { padding: 12px 16px 16px; border-top: 0.5px solid var(--border-2); }
-    .import-textarea {
-      width: 100%; padding: 12px; border: 0.5px solid var(--border-1); border-radius: 10px;
-      font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; line-height: 1.4;
-      background: var(--bg); resize: vertical; outline: none; box-sizing: border-box;
+    .import-file-area {
+      width: 100%; padding: 24px 16px; border: 1.5px dashed var(--border-1); border-radius: 10px;
+      background: var(--bg); cursor: pointer; text-align: center;
+      transition: border-color 0.2s;
     }
-    .import-textarea:focus { border-color: var(--kcal); }
+    .import-file-area:active { border-color: var(--kcal); }
+    .import-file-placeholder { font-size: 14px; color: var(--text-3); }
+    .import-file-name { font-size: 14px; color: var(--kcal); font-weight: 600; }
     .import-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
     .import-msg { margin-top: 10px; font-size: 13px; padding: 10px 12px; border-radius: 8px; }
     .import-msg.success { background: #e1f5ee; color: #085041; }
@@ -744,6 +746,7 @@
       background: var(--kcal);
       color: #fff;
     }
+    .sheet-btn.disabled { opacity: 0.4; pointer-events: none; }
     .sheet-btn:active { opacity: 0.85; }
 
     /* Targets Section */
