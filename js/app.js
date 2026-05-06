@@ -445,11 +445,12 @@ function WeekScreen({ user, targets }) {
 
 function SettingsScreen({ user, targets, onLogout, onImportDone }) {
   const [showImport, setShowImport] = useState(false);
-  const [importCsv, setImportCsv] = useState('');
   const [importStatus, setImportStatus] = useState('');
   const [importMsg, setImportMsg] = useState('');
+  const [importFileName, setImportFileName] = useState('');
   const [showTargets, setShowTargets] = useState(false);
   const [editTargets, setEditTargets] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (targets && !editTargets) {
@@ -473,17 +474,31 @@ function SettingsScreen({ user, targets, onLogout, onImportDone }) {
     window.location.reload(true);
   };
 
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImportFileName(file.name);
+      setImportStatus('');
+      setImportMsg('');
+    }
+  };
+
   const handleImport = async () => {
-    if (!importCsv.trim()) return;
+    const file = fileInputRef.current?.files?.[0];
+    if (!file) return;
     setImportStatus('loading');
     setImportMsg('');
     try {
+      // Read file content as text
+      const csvText = await file.text();
+      if (!csvText.trim()) throw new Error('Datei ist leer');
+
       // Load slot rules and day configs for the dates in the CSV
       const slotRules = await getSlotRules(user.id);
 
       // Parse to get dates first
       const { parseFddbCsv } = await import('./slot-mapper.js');
-      const parsed = parseFddbCsv(importCsv);
+      const parsed = parseFddbCsv(csvText);
       if (parsed.length === 0) throw new Error('Keine Einträge im CSV gefunden');
 
       const dates = [...new Set(parsed.map(e => e.date))];
@@ -503,14 +518,15 @@ function SettingsScreen({ user, targets, onLogout, onImportDone }) {
       }
 
       // Process: assign slots
-      const processed = processImport(importCsv, configMap, slotRules);
+      const processed = processImport(csvText, configMap, slotRules);
 
       // Import into DB
       const result = await importEntries(user.id, processed);
 
       setImportStatus('success');
       setImportMsg(`${result.totalImported} Einträge für ${result.dates.length} Tage importiert.`);
-      setImportCsv('');
+      setImportFileName('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
 
       // Notify parent to refresh
       if (onImportDone) onImportDone();
@@ -573,15 +589,17 @@ function SettingsScreen({ user, targets, onLogout, onImportDone }) {
             </div>
             ${showImport && html`
               <div class="import-section">
-                <textarea
-                  class="import-textarea"
-                  placeholder='CSV aus fddb Tagebuch-Export hier einfügen...'
-                  value=${importCsv}
-                  onInput=${e => setImportCsv(e.target.value)}
-                  rows="8"
-                />
+                <div class="import-file-area" onclick=${() => fileInputRef.current?.click()}>
+                  <input type="file" accept=".csv" ref=${fileInputRef}
+                    onChange=${handleFileSelect} style="display:none"/>
+                  ${importFileName
+                    ? html`<span class="import-file-name">📄 ${importFileName}</span>`
+                    : html`<span class="import-file-placeholder">CSV-Datei auswählen...</span>`
+                  }
+                </div>
                 <div class="import-actions">
-                  <div class="sheet-btn save" onclick=${handleImport}>
+                  <div class="sheet-btn save ${!importFileName || importStatus === 'loading' ? 'disabled' : ''}"
+                    onclick=${handleImport}>
                     ${importStatus === 'loading' ? 'Importiere...' : 'Importieren'}
                   </div>
                 </div>
