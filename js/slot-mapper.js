@@ -201,10 +201,22 @@ function findMatchingRule(foodName, rules) {
   return bestMatch;
 }
 
-// Full pipeline: parse CSV → assign slots → apply time-block logic
+// Full pipeline: parse CSV → filter by date → deduplicate → assign slots → apply time-block logic
+const IMPORT_MIN_DATE = '2026-05-01';
+
 export function processImport(csvText, dayConfigs, slotRules) {
   const parsed = parseFddbCsv(csvText);
-  const withSlots = assignSlots(parsed, dayConfigs, slotRules);
+  const filtered = parsed.filter(e => e.date >= IMPORT_MIN_DATE);
+
+  // Deduplicate by (date, time, fddb_id) — keep last occurrence
+  const seen = new Map();
+  for (const entry of filtered) {
+    const key = `${entry.date}_${entry.time}_${entry.fddb_id}`;
+    seen.set(key, entry);
+  }
+  const unique = [...seen.values()];
+
+  const withSlots = assignSlots(unique, dayConfigs, slotRules);
   const final = applyTimeBlockLogic(withSlots);
   return final;
 }
