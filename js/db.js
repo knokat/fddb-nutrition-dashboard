@@ -145,7 +145,8 @@ export async function importEntries(userId, entries) {
       .eq('slot_auto', true);
     if (delErr) throw delErr;
 
-    // Insert new entries
+    // Insert new entries — use onConflict ignore to skip rows that
+    // conflict with manually corrected entries (slot_auto = false)
     const rows = byDate[date].map(e => ({
       user_id: userId,
       date: e.date,
@@ -163,7 +164,10 @@ export async function importEntries(userId, entries) {
 
     const { error: insErr } = await supabase
       .from('fddb_entries')
-      .upsert(rows, { onConflict: 'user_id,date,time,fddb_id' });
+      .upsert(rows, {
+        onConflict: 'user_id,date,time,fddb_id',
+        ignoreDuplicates: true,
+      });
     if (insErr) throw insErr;
 
     totalImported += rows.length;
